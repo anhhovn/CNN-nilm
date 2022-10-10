@@ -9,8 +9,9 @@ import nilmtk as nilmtk
 from nilmtk import DataSet, MeterGroup, Appliance
 from nilmtk.metergroup import MeterGroupID
 from nilmtk.elecmeter import ElecMeter, ElecMeterID 
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from pandas import DataFrame
+import numpy as np
 
 
 #get current working directory
@@ -19,15 +20,15 @@ dirname = os.path.dirname(cwd)
 REDD = os.path.join(dirname, r"datasource\dataset\REDD\redd.h5")
 redd = DataSet(REDD)
 year = '2011'
-month_end = '8'
-month_start = '1'
-end_date = "{}-30-{}".format(month_end, year)
-start_date = "{}-1-{}".format(month_start, year)
+month_end = '5'
+month_start = '4'
+end_date = "{}-17-{}".format(month_end, year)
+start_date = "{}-18-{}".format(month_start, year)
 appliances_redd1 = ['washer dryer','electric oven', 'fridge', 'microwave', 'dish washer', 'unknown', 'sockets', 'light', 'electric space heater', 'electric stove']
 building = 1
 
 
-# In[165]:
+# In[ ]:
 
 
 class Datasource():
@@ -100,11 +101,13 @@ class Datasource():
         redd_datasource = Datasource(redd, "REDD")
         
         
-    def get_labels_df(self, df: DataFrame, selected_metergroup: MeterGroup):
+    def get_labels_df(self, df: DataFrame, selected_metergroup: MeterGroup) -> [List, Dict]:
         """
-        Returns a list of labels which describes DataFrame columns
+        Returns two lists, one is a list of labels which describes DataFrame columns
+        Other is a list of power threshold of each appliances
         """
         lst = []
+        threshold = {}
         for m in df.columns:
         #print(m)
             label = ""
@@ -116,17 +119,59 @@ class Datasource():
                 #get labels of meter group
                 labels = mg.get_labels(lst_elecmeterID)
                 label = labels[0]
+                threshold[label] =mg.on_power_threshold()
             else:
                 #get ElecMeter using ElecMeterID
                 elec_meter = selected_metergroup[m]
                 #get labels of ElecMeter
-                label = selected_metergroup[m].label()
-                lst += [label]
-        return lst
+                label = elec_meter.label()
+                threshold[label] = elec_meter.on_power_threshold()
+            lst += [label]
+        print("Done making appliance labels from Data Frame")
+        return lst, threshold
 
+    def get_dic_real_power(self, df: DataFrame, labels: List) -> Dict:
+        """
+        Returns a Dictionary in which key is name of the appliance, and value is the power consumption the appliance
+        """
+        Dict = {}
+        lst = []
+        for k, v in df.items():
+            lst += [v]
+        
+        for i in range(len(labels)):
+            Dict[labels[i]] = lst[i]
+            
+        return Dict
+    
+    
+    
+    def get_dic_labeled_power(self, RealPower: Dict, threshold: Dict) -> Dict:
+        """
+        Returns a Dictionary in which key is name of the appliance, and value is 
+        """
+        LabeledPower = {}
+        for appliance, real_power in RealPower.items():
+            if appliance != 'Site meter':
+                arr = create_labels(real_power, threshold[appliance])
+                LabeledPower[appliance] = arr
+        print("Done making Dictionary of labeled power")
+        return LabeledPower
+    
+    
+    def create_labels(self, array, threshold):
+        res = np.empty(array.shape)
+        for i in range(len(array)):
+            if array[i] >= threshold:
+                res[i] = 1
+            else:
+                res[i] = 0
+        return list(res)
+    
 redd_datasource = Datasource(redd, "REDD")
 redd_datasource.all_meters(1, start_date, end_date, sample_period = 3)
 df, selected_metergroup = redd_datasource.read_selected_appliances(1, appliances_redd1, start_date, end_date, True, sample_period = 3)
-labels = redd_datasource.get_labels_df(df, selected_metergroup)
-print(labels)
+labels, threshold = redd_datasource.get_labels_df(df, selected_metergroup)
+DictLabeled_ = redd_datasource.get_dic_real_power(df,labels)
+labeled = redd_datasource.get_dic_labeled_power(DictLabeled_,threshold)
 
