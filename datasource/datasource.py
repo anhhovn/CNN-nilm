@@ -12,6 +12,7 @@ from nilmtk.elecmeter import ElecMeter, ElecMeterID
 from typing import List, Tuple, Dict
 from pandas import DataFrame
 import numpy as np
+import math
 
 
 #get current working directory
@@ -20,11 +21,16 @@ dirname = os.path.dirname(cwd)
 REDD = os.path.join(dirname, r"datasource\dataset\REDD\redd.h5")
 redd = DataSet(REDD)
 year = '2011'
-month_end = '5'
-month_start = '4'
-end_date = "{}-17-{}".format(month_end, year)
-start_date = "{}-18-{}".format(month_start, year)
-appliances_redd1 = ['washer dryer','electric oven', 'fridge', 'microwave', 'dish washer', 'unknown', 'sockets', 'light', 'electric space heater', 'electric stove']
+train_month_end = '5'
+train_month_start = '4'
+train_end_date = "{}-17-{}".format(train_month_end, year)
+train_start_date = "{}-18-{}".format(train_month_start, year)
+test_month_end = '5'
+test_month_start = '5'
+test_end_date = "{}-25-{}".format(test_month_end, year)
+test_start_date = "{}-18-{}".format(test_month_start, year)
+appliances_redd1 = ['fridge','dish washer','sockets','light','unknown','electric space heater','electric stove','electric oven',
+                   'washer dryer']
 building = 1
 
 
@@ -98,6 +104,7 @@ class Datasource():
         Read all the meters in given building
         """
         elec = self.dataset.buildings[building].elec
+        print(elec)
         redd_datasource = Datasource(redd, "REDD")
         
         
@@ -153,7 +160,7 @@ class Datasource():
         LabeledPower = {}
         for appliance, real_power in RealPower.items():
             if appliance != 'Site meter':
-                arr = create_labels(real_power, threshold[appliance])
+                arr = self.create_labels(real_power, threshold[appliance])
                 LabeledPower[appliance] = arr
         print("Done making Dictionary of labeled power")
         return LabeledPower
@@ -168,10 +175,117 @@ class Datasource():
                 res[i] = 0
         return list(res)
     
+    
 redd_datasource = Datasource(redd, "REDD")
-redd_datasource.all_meters(1, start_date, end_date, sample_period = 3)
-df, selected_metergroup = redd_datasource.read_selected_appliances(1, appliances_redd1, start_date, end_date, True, sample_period = 3)
-labels, threshold = redd_datasource.get_labels_df(df, selected_metergroup)
-DictLabeled_ = redd_datasource.get_dic_real_power(df,labels)
-labeled = redd_datasource.get_dic_labeled_power(DictLabeled_,threshold)
+#redd_datasource.all_meters(1, train_start_date, train_end_date, sample_period = 3)
+#train dataset
+train_df, train_selected_metergroup = redd_datasource.read_selected_appliances(1, appliances_redd1, train_start_date, train_end_date, True, sample_period = 3)
+train_labels, train_threshold = redd_datasource.get_labels_df(train_df, train_selected_metergroup)
+train_DictLabeled = redd_datasource.get_dic_real_power(train_df,train_labels)
+train_site_meter = train_DictLabeled['Site meter']
+train_labeled = redd_datasource.get_dic_labeled_power(train_DictLabeled,train_threshold)
+#test dataset
+test_df, test_selected_metergroup = redd_datasource.read_selected_appliances(1, appliances_redd1, test_start_date, test_end_date, True, sample_period = 3)
+test_labels, test_threshold = redd_datasource.get_labels_df(test_df, test_selected_metergroup)
+test_DictLabeled = redd_datasource.get_dic_real_power(test_df,test_labels)
+test_site_meter = test_DictLabeled['Site meter']
+test_labeled = redd_datasource.get_dic_labeled_power(test_DictLabeled,test_threshold)
+
+
+# In[ ]:
+
+
+train_labeled_fridge = train_labeled['Light'] 
+test_labeled_fridge = test_labeled['Light'] 
+
+
+# In[ ]:
+
+
+import numpy as py
+def dimension_handler_ndim(seconds : int, arr: List, sample_period):
+    """
+    Make batches of data with the given seconds and sample period
+    """
+    
+    #take care of redundancies here
+    new_arr = []
+    rem = len(arr) % seconds
+    if rem !=0:
+        arr = arr[:-rem]
+    n_sample = len(arr)//seconds
+    print(n_sample)
+    for i in range(n_sample):
+        lst = list()
+        for j in range(seconds):    
+            lst.append([arr[(i*seconds)+j]])
+        new_arr.append(lst)
+        
+    new_arr = np.array(new_arr)
+    return new_arr
+
+def dimension_handler_target(seconds : int, arr: List, sample_period):
+    """
+    Make batches of data with the given seconds and sample period
+    """
+    new_arr = list()
+    
+    rem = len(arr) % seconds
+    if rem !=0:
+        arr = arr[:-rem]
+    n_sample = len(arr)//seconds
+    for i in range(n_sample):
+        lst = list()
+        for j in range(seconds):    
+            lst.append([arr[(i*seconds)+j]])
+        new_arr.append(any(lst))
+        
+    new_arr = np.array(new_arr)
+    
+        
+        
+    
+    
+    return new_arr
+
+window = 20
+train_batches_X = dimension_handler_ndim(window, train_site_meter.values, 3) 
+test_batches_X = dimension_handler_ndim(window, test_site_meter.values, 3)
+train_batches_Y = dimension_handler_target(window, train_labeled_fridge, 3)
+test_batches_Y = dimension_handler_target(window, test_labeled_fridge, 3)
+print(f'Train: X.len = {len(train_batches_X)}  y.len = {len(train_batches_Y)}')
+print(f'Valid: X.len = {len(test_batches_X)} Valid: y.len = {len(test_batches_Y)}')
+
+
+# In[ ]:
+
+
+import time
+from numpy import array
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.layers import Flatten
+from keras.layers.convolutional import Conv1D
+from keras.layers.convolutional import MaxPooling1D
+
+n_steps = 20
+n_features = 1
+
+model = Sequential()
+model.add(Conv1D(filters=64, kernel_size=2, activation='relu', input_shape=(n_steps, n_features)))
+model.add(MaxPooling1D(pool_size=2))
+model.add(Flatten())
+model.add(Dense(50, activation='relu'))
+model.add(Dense(1))
+model.compile(optimizer='adam', loss='mse')
+
+train_batches_X = train_batches_X.reshape((train_batches_X.shape[0], train_batches_X.shape[1], 1))
+start_time = time.time()
+model.fit(train_batches_X, train_batches_Y, epochs=200, verbose=0)
+test_batches_X = test_batches_X.reshape((test_batches_X.shape[0], test_batches_X.shape[1], 1))
+print('Done Training {}'.format(round(time.time() - start_time, 2)))
+yhat = model.predict(test_batches_X, verbose=0)
+yhat_unpacked = [int(i) for i in yhat]
+from sklearn.metrics import accuracy_score
+print(accuracy_score(yhat_unpacked,test_batches_Y))
 
